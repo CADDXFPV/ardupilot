@@ -208,7 +208,7 @@ void AP_MSP_Telem_Backend::update_gps_state(gps_state_t &gps_state)
     memset(&gps_state, 0, sizeof(gps_state));
 
     WITH_SEMAPHORE(gps.get_semaphore());
-    gps_state.fix_type = gps.status() >= AP_GPS_FixType::FIX_3D? 2:0;
+    gps_state.fix_type = gps.status() >= AP_GPS::GPS_Status::GPS_OK_FIX_3D? 2:0;
     gps_state.num_sats = gps.num_sats();
 
     if (gps_state.fix_type > 0) {
@@ -255,7 +255,7 @@ void AP_MSP_Telem_Backend::update_airspeed(airspeed_state_t &airspeed_state)
 {
     AP_AHRS &ahrs = AP::ahrs();
     WITH_SEMAPHORE(ahrs.get_semaphore());
-    airspeed_state.airspeed_have_estimate = ahrs.airspeed_EAS(airspeed_state.airspeed_estimate_ms);
+    airspeed_state.airspeed_have_estimate = ahrs.airspeed_estimate(airspeed_state.airspeed_estimate_ms);
     if (!airspeed_state.airspeed_have_estimate) {
         airspeed_state.airspeed_estimate_ms = 0.0;
     }
@@ -312,7 +312,7 @@ void AP_MSP_Telem_Backend::update_flight_mode_str(char *flight_mode_str, uint8_t
         const char* unit = (units == OSD_UNIT_METRIC) ? "m/s" : "f/s";
 
         if (v_length > 1.0f) {
-            const int32_t angle = wrap_360_cd(rad_to_cd(atan2f(v.y, v.x)) - ahrs.yaw_sensor);
+            const int32_t angle = wrap_360_cd(DEGX100 * atan2f(v.y, v.x) - ahrs.yaw_sensor);
             const int32_t interval = 36000 / ARRAY_SIZE(arrows);
             uint8_t arrow = arrows[((angle + interval / 2) / interval) % ARRAY_SIZE(arrows)];
             snprintf(flight_mode_str, size, "%s %d%s%c%c%c", notify->get_flight_mode_str(),  (uint8_t)roundf(v_length), unit, 0xE2, 0x86, arrow);
@@ -904,9 +904,9 @@ MSPCommandResult AP_MSP_Telem_Backend::msp_process_out_attitude(sbuf_t *dst)
         int16_t pitch;
         int16_t yaw;
     } attitude {
-        roll : int16_t(ahrs.get_roll_deg() * 10),     // degress to decidegrees
-        pitch : int16_t(ahrs.get_pitch_deg() * 10),   // degress to decidegrees
-        yaw : int16_t(ahrs.get_yaw_deg())
+        roll : int16_t(ahrs.roll_sensor * 0.1),     // centidegress to decidegrees
+        pitch : int16_t(ahrs.pitch_sensor * 0.1),   // centidegress to decidegrees
+        yaw : int16_t(ahrs.yaw_sensor * 0.01)       // centidegress to degrees
     };
 
     sbuf_write_data(dst, &attitude, sizeof(attitude));
@@ -1067,25 +1067,19 @@ MSPCommandResult AP_MSP_Telem_Backend::msp_process_out_rtc(sbuf_t *dst)
 #if AP_RC_CHANNEL_ENABLED
 MSPCommandResult AP_MSP_Telem_Backend::msp_process_out_rc(sbuf_t *dst)
 {
-    float roll = rc().get_roll_channel().norm_input_dz();
-    float pitch = -rc().get_pitch_channel().norm_input_dz();
-    float yaw = rc().get_yaw_channel().norm_input_dz();
-    float throttle = rc().get_throttle_channel().norm_input_dz();
+    static constexpr uint8_t msp_rc_channel_count = 16;
+    uint16_t channels[msp_rc_channel_count];
+    for (uint8_t i = 0; i < msp_rc_channel_count; i++) {
+        channels[i] = 1000;
+    }
 
-    const struct PACKED {
-        uint16_t a;
-        uint16_t e;
-        uint16_t r;
-        uint16_t t;
-    } rc {
-        // send only 4 channels, MSP order is AERT
-        a : uint16_t(roll*500+1500),       // A
-        e : uint16_t(pitch*500+1500),      // E
-        r : uint16_t(yaw*500+1500),        // R
-        t : uint16_t(throttle*1000+1000)    // T
-    };
+    const uint8_t valid_channel_count = RC_Channels::get_valid_channel_count();
+    const uint8_t read_channel_count = MIN(msp_rc_channel_count, valid_channel_count);
+    if (read_channel_count > 0) {
+        rc().get_radio_in(channels, read_channel_count);
+    }
 
-    sbuf_write_data(dst, &rc, sizeof(rc));
+    sbuf_write_data(dst, channels, sizeof(channels));
     return MSP_RESULT_ACK;
 }
 #endif  // AP_RC_CHANNEL_ENABLED
